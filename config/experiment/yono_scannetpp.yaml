@@ -1,0 +1,14 @@
+# @package _global_
+
+defaults:
+  - /dataset@_group_.scannetpp: scannetpp
+  - override /model/encoder/backbone: local_global
+
+model:
+  decoder:
+    make_scale_invariant: true
+
+dataset:
+  scannetpp:
+    input_image_shape: [224, 224]
+    pose_norm_method: max_pairwise_d
