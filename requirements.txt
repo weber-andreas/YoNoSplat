@@ -15,6 +15,7 @@ matplotlib
 moviepy==1.0.3
 imageio
 git+https://github.com/rmurai0610/diff-gaussian-rasterization-w-pose.git
+gsplat==1.4.0
 timm
 dacite
 lpips
