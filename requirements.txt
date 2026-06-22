@@ -25,3 +25,4 @@ tabulate
 svg.py
 scikit-video
 opencv-python
+trimesh
