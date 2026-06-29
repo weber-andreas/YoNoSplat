@@ -72,3 +72,55 @@ def export_ply(
     elements[:] = list(map(tuple, attributes))
     path.parent.mkdir(exist_ok=True, parents=True)
     PlyData([PlyElement.describe(elements, "vertex")]).write(path)
+
+
+OCCAMLGS_SH_DEGREE = 3
+OCCAMLGS_NUM_REST = 3 * (OCCAMLGS_SH_DEGREE + 1) ** 2 - 3  # 45
+
+
+def export_occamlgs_ply(
+    means: Float[Tensor, "gaussian 3"],
+    scales: Float[Tensor, "gaussian 3"],
+    rotations: Float[Tensor, "gaussian 4"],
+    harmonics: Float[Tensor, "gaussian 3 d_sh"],
+    opacities: Float[Tensor, " gaussian"],
+    path: Path,
+):
+    """Export a PLY compatible with OccamLGS gaussian_model.py load_ply.
+
+    Differences from export_ply:
+    - opacity is inverted back to logit space (OccamLGS applies sigmoid internally)
+    - f_rest_* is padded with zeros to match sh_degree=3 (45 coefficients)
+    """
+    # Rotations: scipy uses (x,y,z,w), 3DGS / OccamLGS uses (w,x,y,z).
+    rotations_np = R.from_quat(rotations.detach().cpu().numpy()).as_matrix()
+    rotations_np = R.from_matrix(rotations_np).as_quat()
+    x, y, z, w = rearrange(rotations_np, "g xyzw -> xyzw g")
+    rotations_np = np.stack((w, x, y, z), axis=-1)
+
+    f_dc = harmonics[..., 0].detach().cpu().contiguous().numpy()
+
+    # Pad higher-order SH coefficients with zeros; YoNoSplat only predicts the DC band.
+    n = means.shape[0]
+    f_rest = np.zeros((n, OCCAMLGS_NUM_REST), dtype=np.float32)
+
+    # OccamLGS stores opacity as a raw logit (pre-sigmoid).
+    opacities_logit = torch.logit(opacities.clamp(1e-6, 1 - 1e-6))
+
+    dtype_full = [(attr, "f4") for attr in construct_list_of_attributes(OCCAMLGS_NUM_REST)]
+    elements = np.empty(n, dtype=dtype_full)
+    attributes = np.concatenate(
+        [
+            means.detach().cpu().numpy(),
+            np.zeros((n, 3), dtype=np.float32),  # normals (unused)
+            f_dc,
+            f_rest,
+            opacities_logit[..., None].detach().cpu().numpy(),
+            scales.log().detach().cpu().numpy(),
+            rotations_np,
+        ],
+        axis=1,
+    )
+    elements[:] = list(map(tuple, attributes))
+    path.parent.mkdir(exist_ok=True, parents=True)
+    PlyData([PlyElement.describe(elements, "vertex")]).write(path)

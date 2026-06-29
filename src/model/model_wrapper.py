@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from tabulate import tabulate
 from torch import Tensor, nn
 from tqdm import tqdm
 
-from .ply_export import export_ply
+from .ply_export import export_ply, export_occamlgs_ply
 from .types import Gaussians
 from ..dataset import DatasetCfgWrapper
 from ..dataset.data_module import get_data_shim
@@ -151,6 +152,7 @@ class ModelWrapper(LightningModule):
 
         # This is used for testing.
         self.benchmarker = Benchmarker()
+        self.test_scores: dict[str, dict] = {}
 
         self.gaussian_downsample_ratio = gaussian_downsample_ratio
         self.gaussians_per_axis = gaussians_per_axis
@@ -370,6 +372,9 @@ class ModelWrapper(LightningModule):
             self.log_dict(all_metrics)
             self.print_preview_metrics(all_metrics, methods, overlap_tag=overlap_tag)
 
+            (scene,) = batch["scene"]
+            self.test_scores[scene] = {k: v.item() for k, v in all_metrics.items()}
+
         # # if align pose, save the aligned output
         # if self.test_cfg.align_pose:
         #     output = output_align
@@ -471,6 +476,27 @@ class ModelWrapper(LightningModule):
                 trim(gaussians.opacities)[0],
                 output_Gaussian_path,
                 save_sh_dc_only=True,
+            )
+
+            # save OccamLGS-compatible ply file
+            occamlgs_path = save_path / f"{scene}_gaussians_occamlgs.ply"
+            export_occamlgs_ply(
+                trim(gaussians.means)[0],
+                trim(visualization_dump["scales"])[0],
+                trim(visualization_dump["rotations"])[0],
+                trim(gaussians.harmonics)[0],
+                trim(gaussians.opacities)[0],
+                occamlgs_path,
+            )
+
+            # save camera poses for visualization
+            np.savez(
+                save_path / f"{scene}_cameras.npz",
+                target_extrinsics=batch["target"]["extrinsics"][0].cpu().numpy(),
+                target_intrinsics=batch["target"]["intrinsics"][0].cpu().numpy(),
+                target_indices=batch["target"]["index"][0].cpu().numpy(),
+                context_extrinsics=batch["context"]["extrinsics"][0].cpu().numpy(),
+                context_intrinsics=batch["context"]["intrinsics"][0].cpu().numpy(),
             )
 
             # save point cloud
@@ -654,11 +680,27 @@ class ModelWrapper(LightningModule):
 
     def on_test_end(self) -> None:
         name = get_cfg()["wandb"]["name"]
-        self.benchmarker.dump(self.test_cfg.output_path / name / "benchmark.json")
-        self.benchmarker.dump_memory(
-            self.test_cfg.output_path / name / "peak_memory.json"
-        )
+        base = self.test_cfg.output_path / name
+        self.benchmarker.dump(base / "benchmark.json")
+        self.benchmarker.dump_memory(base / "peak_memory.json")
         self.benchmarker.summarize()
+
+        if self.test_scores:
+            for scene, scores in self.test_scores.items():
+                scene_path = base / scene / "metrics.json"
+                scene_path.parent.mkdir(exist_ok=True, parents=True)
+                with scene_path.open("w") as f:
+                    json.dump(scores, f, indent=2)
+
+            keys = list(next(iter(self.test_scores.values())).keys())
+            aggregate = {
+                k: float(np.mean([s[k] for s in self.test_scores.values()]))
+                for k in keys
+            }
+            agg_path = base / "metrics.json"
+            agg_path.parent.mkdir(exist_ok=True, parents=True)
+            with agg_path.open("w") as f:
+                json.dump({"scenes": self.test_scores, "mean": aggregate}, f, indent=2)
 
     @rank_zero_only
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
