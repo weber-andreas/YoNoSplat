@@ -177,3 +177,4 @@ table.tex
 /test/*
 
 **/.DS_Store
+.vscode/
