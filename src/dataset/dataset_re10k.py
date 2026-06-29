@@ -38,6 +38,8 @@ class DatasetRE10kCfg(DatasetCfgCommon):
     relative_pose: bool
     skip_bad_shape: bool
     pose_norm_method: str = "max_pairwise_d"  # "none", "start_end", "max_pairwise_d", "max_view1_d", "mean_pairwise_d", "max_trans"
+    max_test_scenes: int | None = None
+    test_scene_ids: list[str] | None = None
 
 
 @dataclass
@@ -97,6 +99,7 @@ class DatasetRE10k(IterableDataset):
     def __iter__(self):
         # Chunks must be shuffled here (not inside __init__) for validation to show
         # random chunks.
+        scenes_yielded = 0
         if self.stage in ("train", "val"):
             self.chunks = self.shuffle(self.chunks)
 
@@ -124,6 +127,9 @@ class DatasetRE10k(IterableDataset):
             for example in chunk:
                 extrinsics, intrinsics = self.convert_poses(example["cameras"])
                 scene = example["key"]
+
+                if self.cfg.test_scene_ids is not None and scene not in self.cfg.test_scene_ids:
+                    continue
 
                 try:
                     context_indices, target_indices, overlap = self.view_sampler.sample(
@@ -209,6 +215,11 @@ class DatasetRE10k(IterableDataset):
                     example = apply_augmentation_shim(example)
                 yield apply_crop_shim(example, tuple(self.cfg.input_image_shape))
 
+                if self.stage == "test" and self.cfg.max_test_scenes is not None:
+                    scenes_yielded += 1
+                    if scenes_yielded >= self.cfg.max_test_scenes:
+                        return
+
     def convert_poses(
         self,
         poses: Float[Tensor, "batch 18"],
@@ -266,7 +277,6 @@ class DatasetRE10k(IterableDataset):
             data_stages = ("test", "train")
         for data_stage in data_stages:
             for root in self.cfg.roots:
-                # Load the root's index.
                 with (root / data_stage / "index.json").open("r") as f:
                     index = json.load(f)
                 index = {k: Path(root / data_stage / v) for k, v in index.items()}
